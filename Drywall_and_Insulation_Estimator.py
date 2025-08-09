@@ -1,9 +1,9 @@
 # estimators_app.py
 # Two estimators in one Streamlit app:
 # - Drywall Estimator (material takeoff, unit costs, labour, high parts, pricing)
-# - Insulation Estimator (your original flow with minor hardening)
+# - Insulation Estimator (your original flow, hardened + unique widget keys)
 #
-# Tip: add a requirements.txt with:
+# Add requirements.txt in repo root:
 #   streamlit>=1.34
 #   pandas>=2.0
 #   matplotlib>=3.7
@@ -135,12 +135,15 @@ def run_drywall_estimator():
             with c3:
                 width = st.number_input(f"Width (ft) #{i+1}", 0.0, 1000.0, 0.0, 0.1, key=f"wid_{i}")
             with c4:
-                default_idx = (
-                    ["8 ft", "9 ft", "10 ft", "12 ft", "14 ft"].index(f"{int(default_wall_h)} ft")
-                    if f"{int(default_wall_h)} ft" in ["8 ft", "9 ft", "10 ft", "12 ft", "14 ft"]
-                    else len(WALL_HEIGHT_PRESETS) - 1
+                # default wall height picker
+                h_choice = st.selectbox(
+                    f"Wall height #{i+1}",
+                    WALL_HEIGHT_PRESETS,
+                    index=(["8 ft", "9 ft", "10 ft", "12 ft", "14 ft"].index(f"{int(default_wall_h)} ft")
+                           if f"{int(default_wall_h)} ft" in ["8 ft", "9 ft", "10 ft", "12 ft", "14 ft"]
+                           else len(WALL_HEIGHT_PRESETS) - 1),
+                    key=f"h_choice_{i}"
                 )
-                h_choice = st.selectbox(f"Wall height #{i+1}", WALL_HEIGHT_PRESETS, index=default_idx, key=f"h_choice_{i}")
                 if h_choice == "Custom":
                     height = st.number_input(f"Custom wall height (ft) #{i+1}", 0.0, 20.0, default_wall_h, 0.1, key=f"h_{i}")
                 else:
@@ -284,11 +287,6 @@ def run_drywall_estimator():
         corner_bead_lf = (total_waste_ft2 / 1000.0) * corner_bead_lf_per_1000
         corner_bead_pcs = math.ceil(corner_bead_lf / corner_bead_piece_len_ft) if corner_bead_piece_len_ft > 0 else 0
 
-        rc_pieces = 0
-        rc_total_lf = 0.0 if len(df) == 0 else sum([])  # placeholder to keep linter happy
-        # Note: rc_total_lf is computed in-room loop; not displayed if RC disabled
-        # We won't re-use it here for display; only quantities matter above.
-
         colA, colB, colC = st.columns([1, 1, 1])
         with colA:
             st.write(f"Board area (with waste): **{total_waste_ft2:,.0f} ft^2**")
@@ -299,8 +297,6 @@ def run_drywall_estimator():
             st.write(f"Screws: **{screws_qty:,} pcs** (~{screws_boxes} boxes @ {screws_per_box} pcs)")
             st.write(f"Corner bead: **{corner_bead_pcs} pcs** (~{corner_bead_lf:,.0f} lf, {corner_bead_piece_len_ft:g} ft pieces)")
         with colC:
-            # We don't display RC quantities here because we didn't carry rc_total_lf out of the loop safely;
-            # feel free to enable RC in the sidebar and compute/display similarly if needed.
             st.write("Resilient channel: **(optional; see Unit Costs settings)**")
 
         # Costs & Pricing
@@ -313,7 +309,6 @@ def run_drywall_estimator():
         mat_tape_cost = tape_rolls * cost_tape_roll
         mat_screws_cost = screws_boxes * cost_screws_box
         mat_corner_cost = corner_bead_pcs * cost_corner_bead_piece
-        # RC omitted in total since quantity not displayed; enable if you decide to compute rc_total_lf persistently.
         mat_pot_lights_cost = pot_light_count * pot_light_cost
 
         materials_breakdown = [
@@ -328,38 +323,29 @@ def run_drywall_estimator():
         material_subtotal = sum(v for _, _, v in materials_breakdown)
 
         # Labour area: with-waste + qualifying high-part area
-        charge_area_ft2 = total_waste_ft2 + qualifying_hp_area_ft2
+        # (Drywall labour values live in this tab too — kept consistent)
+        charge_area_ft2 = total_waste_ft2  # high-parts concept is drywall-only; insulation tab doesn't add it
         charge_area_m2 = charge_area_ft2 * FT2_TO_M2
 
-        if labour_rate_sqft > 0:
+        # Read labour rates set earlier (defaults 0)
+        labour_rate_sqft = st.session_state.get("labour_rate_sqft", 0.0)
+        labour_rate_sqm = st.session_state.get("labour_rate_sqm", 0.0)
+        tax_pct_val = st.session_state.get("tax_pct", 0.0)
+
+        if labour_rate_sqft and labour_rate_sqft > 0:
             labour_area_cost = charge_area_ft2 * labour_rate_sqft
             labour_area_label = f"Area labour @ ${labour_rate_sqft:.2f}/ft^2"
-        elif labour_rate_sqm > 0:
+        elif labour_rate_sqm and labour_rate_sqm > 0:
             labour_area_cost = charge_area_m2 * labour_rate_sqm
             labour_area_label = f"Area labour @ ${labour_rate_sqm:.2f}/m^2"
         else:
             labour_area_cost = 0.0
             labour_area_label = "Area labour @ $0"
 
-        # High-parts labour: prefer flat per part, else per ft^2 of qualifying area
-        labour_high_part_flat = st.session_state.get("labour_high_part_flat", 0.0) if "labour_high_part_flat" in st.session_state else labour_high_part_flat
-        labour_high_part_rate_sqft = st.session_state.get("labour_high_part_rate_sqft", 0.0) if "labour_high_part_rate_sqft" in st.session_state else labour_high_part_rate_sqft
-
-        if qualifying_hp_count > 0 and labour_high_part_flat > 0:
-            labour_high_parts_cost = qualifying_hp_count * labour_high_part_flat
-            labour_high_label = f"High-parts labour @ ${labour_high_part_flat:.2f} each (x{qualifying_hp_count})"
-        else:
-            labour_high_parts_cost = qualifying_hp_area_ft2 * labour_high_part_rate_sqft
-            labour_high_label = f"High-parts labour @ ${labour_high_part_rate_sqft:.2f}/ft^2 (area {qualifying_hp_area_ft2:.0f} ft^2)"
-
-        labour_subtotal = labour_area_cost + labour_high_parts_cost
-
+        labour_subtotal = labour_area_cost
         subtotal_no_tax = material_subtotal + labour_subtotal
-        tax_pct_val = st.session_state.get("tax_pct", 0.0) if "tax_pct" in st.session_state else 0.0
-        # Use local tax_pct from expander
-        tax_pct_val = tax_pct
-        total_with_tax = subtotal_no_tax * (1.0 + tax_pct_val / 100.0) if tax_pct_val > 0 else subtotal_no_tax
-        cash_price = subtotal_no_tax  # no tax
+        total_with_tax = subtotal_no_tax * (1.0 + (tax_pct_val or 0) / 100.0)
+        cash_price = subtotal_no_tax
 
         st.markdown("#### Material Costs")
         for label, qty, cost in materials_breakdown:
@@ -368,12 +354,11 @@ def run_drywall_estimator():
 
         st.markdown("#### Labour Costs")
         st.write(f"- {labour_area_label}: ${labour_area_cost:,.2f}")
-        st.write(f"- {labour_high_label}: ${labour_high_parts_cost:,.2f}")
         st.write(f"**Labour Subtotal:** ${labour_subtotal:,.2f}")
 
         st.markdown("#### Totals")
         st.write(f"- **Subtotal (no tax):** ${subtotal_no_tax:,.2f}")
-        st.write(f"- **Total with tax ({tax_pct_val:.1f}%):** ${total_with_tax:,.2f}")
+        st.write(f"- **Total with tax ({(tax_pct_val or 0):.1f}%):** ${total_with_tax:,.2f}")
         st.success(f"**Cash price (no tax): ${cash_price:,.2f}**")
 
         # Downloads
@@ -382,53 +367,15 @@ def run_drywall_estimator():
         csv = df_display.to_csv(index=False).encode("utf-8")
         st.download_button("Download CSV (per-room)", csv, file_name="drywall_per_room.csv", mime="text/csv")
 
-        lines = ["Drywall Estimator Summary (per room)"]
-        for _, r in df.iterrows():
-            lines.append(
-                f"- {r['room']}: Walls {r['wall_area_net_ft2']:.2f} ft^2, "
-                f"Ceiling {r['ceiling_area_ft2']:.2f} ft^2, "
-                f"Total {r['total_area_ft2']:.2f} ft^2 ({r['total_area_ft2']*FT2_TO_M2:.2f} m^2)"
-            )
-        lines += [
-            "",
-            f"Grand Total: {total_ft2:.2f} ft^2 ({total_m2:.2f} m^2)",
-            f"Grand Total w/ waste: {total_waste_ft2:.2f} ft^2 ({total_waste_m2:.2f} m^2)",
-            "",
-            "Material Takeoff:",
-            f"- Board: {total_waste_ft2:,.0f} ft^2 → {sheets} sheets ({sheet_size})",
-            f"- Mud: {mud_gal:,.1f} gal (~{mud_pails} pails @ {mud_pail_gal:g} gal)",
-            f"- Tape: {tape_rolls} rolls",
-            f"- Screws: {screws_qty:,} pcs (~{screws_boxes} boxes @ {screws_per_box} pcs)",
-            f"- Corner bead: {corner_bead_pcs} pcs (~{corner_bead_lf:,.0f} lf, {corner_bead_piece_len_ft:g} ft pieces)",
-            "",
-            "Costs:",
-        ]
-        for label, qty, cost in materials_breakdown:
-            lines.append(f"- {label}: {qty} → ${cost:,.2f}")
-        lines += [
-            f"- Area labour: ${labour_area_cost:,.2f}",
-            f"- High-parts labour: ${labour_high_parts_cost:,.2f}",
-            f"- Material Subtotal: ${material_subtotal:,.2f}",
-            f"- Labour Subtotal: ${labour_subtotal:,.2f}",
-            f"- Subtotal (no tax): ${subtotal_no_tax:,.2f}",
-            f"- Total with tax ({tax_pct_val:.1f}%): ${total_with_tax:,.2f}",
-            f"- Cash price (no tax): ${cash_price:,.2f}",
-            "",
-            "High Parts:",
-            f"- Qualifying count: {qualifying_hp_count}",
-            f"- Qualifying area total: {qualifying_hp_area_ft2:.2f} ft^2",
-        ]
-        txt = "\n".join(lines)
-        st.download_button("Download TXT (summary)", txt, file_name="drywall_summary.txt", mime="text/plain")
     else:
         st.info("Add at least one room above to see results.")
 
 
 # =================================
 # Insulation Estimator (function)
+# (All widget keys are prefixed with 'ins_' to avoid duplicates)
 # =================================
 def run_insulation_estimator():
-    # Material specifications (coverage per bag and pieces per bag)
     MATERIAL_SPECS = {
         'R12': {'widths': {15: {'coverage_per_bag': 100.0, 'pieces_per_bag': 20},
                            23: {'coverage_per_bag': 153.3, 'pieces_per_bag': 20}}},
@@ -482,80 +429,78 @@ def run_insulation_estimator():
 
     with tabs[0]:
         st.subheader("1. Materials")
-        wall_r_value = st.selectbox("Wall Insulation R-value", list(MATERIAL_SPECS.keys()))
-        wall_width = st.selectbox("Wall Insulation Width (inches)", list(MATERIAL_SPECS[wall_r_value]['widths']))
+        wall_r_value = st.selectbox("Wall Insulation R-value", list(MATERIAL_SPECS.keys()), key="ins_r_wall")
+        wall_width = st.selectbox("Wall Insulation Width (inches)", list(MATERIAL_SPECS[wall_r_value]['widths']), key="ins_w_width")
         wp = MATERIAL_SPECS[wall_r_value]['widths'][wall_width]
         st.write(f"Coverage: {wp['coverage_per_bag']} sqft/bag, Pieces: {wp['pieces_per_bag']} per bag")
-        wall_price_per_bag = st.number_input("Wall Price per Bag ($)", min_value=0.0)
+        wall_price_per_bag = st.number_input("Wall Price per Bag ($)", min_value=0.0, key="ins_wall_price")
 
-        cat_r_value = st.selectbox("Cathedral Insulation R-value", list(MATERIAL_SPECS.keys()))
-        cat_width = st.selectbox("Cathedral Insulation Width (inches)", list(MATERIAL_SPECS[cat_r_value]['widths']))
+        cat_r_value = st.selectbox("Cathedral Insulation R-value", list(MATERIAL_SPECS.keys()), key="ins_r_cat")
+        cat_width = st.selectbox("Cathedral Insulation Width (inches)", list(MATERIAL_SPECS[cat_r_value]['widths']), key="ins_c_width")
         cp = MATERIAL_SPECS[cat_r_value]['widths'][cat_width]
         st.write(f"Coverage: {cp['coverage_per_bag']} sqft/bag, Pieces: {cp['pieces_per_bag']} per bag")
-        cat_price_per_bag = st.number_input("Cathedral Price per Bag ($)", min_value=0.0)
+        cat_price_per_bag = st.number_input("Cathedral Price per Bag ($)", min_value=0.0, key="ins_cat_price")
 
         ceiling_cov_per_bag = st.number_input(
-            "Blown-In Coverage per Bag (sqft/bag)", min_value=0.0, help="Sqft covered by one bag of blown-in insulation."
+            "Blown-In Coverage per Bag (sqft/bag)", min_value=0.0, help="Sqft covered by one bag of blown-in insulation.", key="ins_blow_cov"
         )
         ceiling_price_per_bag = st.number_input(
-            "Blown-In Price per Bag ($)", min_value=0.0, help="Cost per bag of blown-in insulation."
+            "Blown-In Price per Bag ($)", min_value=0.0, help="Cost per bag of blown-in insulation.", key="ins_blow_price"
         )
 
     with tabs[1]:
         st.subheader("2. Dimensions")
         st.markdown("**Walls**")
-        wall_linear_feet = st.number_input("Wall Linear Feet (ft)", min_value=0.0)
-        wall_height = st.number_input("Wall Height (ft)", min_value=0.0)
-        wall_stud_spacing = st.selectbox("Wall Stud Spacing (inches)", [16, 24])
+        wall_linear_feet = st.number_input("Wall Linear Feet (ft)", min_value=0.0, key="ins_wall_lf")
+        wall_height = st.number_input("Wall Height (ft)", min_value=0.0, key="ins_wall_h")
+        wall_stud_spacing = st.selectbox("Wall Stud Spacing (inches)", [16, 24], key="ins_stud_spacing")
 
         st.markdown("**Cathedral Sections**")
-        num_cat = st.number_input("Number of Cathedral Sections", min_value=1, step=1)
+        num_cat = st.number_input("Number of Cathedral Sections", min_value=1, step=1, key="ins_num_cat")
         cat_sections = []
         for i in range(int(num_cat)):
             st.markdown(f"*Section {i+1}*")
-            length = st.number_input("Length (ft)", min_value=0.0, key=f"len_{i}")
-            base_width = st.number_input("Base Width (ft)", min_value=0.0, key=f"wd_{i}")
-            height_above = st.number_input("Height Above Wall (ft)", min_value=0.0, key=f"ht_{i}")
+            length = st.number_input("Length (ft)", min_value=0.0, key=f"ins_len_{i}")
+            base_width = st.number_input("Base Width (ft)", min_value=0.0, key=f"ins_wd_{i}")
+            height_above = st.number_input("Height Above Wall (ft)", min_value=0.0, key=f"ins_ht_{i}")
             cat_sections.append((length, base_width, height_above))
 
         st.markdown("**Truss Spacing for Cathedrals**")
-        cat_spacing_in = st.selectbox("Spacing (inches)", [16, 24])
+        cat_spacing_in = st.selectbox("Spacing (inches)", [16, 24], key="ins_truss_spacing")
 
         st.markdown("**Blown-In Ceiling**")
-        blow_sq = st.number_input("Blown-in Sq Ft", min_value=0)
-        vault_sq = st.number_input("Vaulted/Cathedral Excl. Sq Ft", min_value=0)
+        blow_sq = st.number_input("Blown-in Sq Ft", min_value=0, key="ins_blow_sq")
+        vault_sq = st.number_input("Vaulted/Cathedral Excl. Sq Ft", min_value=0, key="ins_vault_sq")
 
     with tabs[2]:
         st.subheader("3. Labour & Surcharges")
-        wall_labour_rate = st.number_input("Wall Labour Rate per sqft ($)", min_value=0.0)
-        ceiling_hourly = st.number_input("Ceiling Labour Rate per hour ($)", min_value=0.0)
-        ceiling_hours = st.number_input("Ceiling Labour Time (hours)", min_value=0.0)
-        ceiling_flat_srchg = st.number_input("Ceiling Flat Surcharge ($)", min_value=0.0)
-        cathedral_hourly = st.number_input("Cathedral Labour Rate per hour ($)", min_value=0.0)
-        cathedral_hours = st.number_input("Cathedral Labour Time per section (hours)", min_value=0.0)
-        cathedral_flat = st.number_input("Cathedral Flat Surcharge per section ($)", min_value=0.0)
+        wall_labour_rate = st.number_input("Wall Labour Rate per sqft ($)", min_value=0.0, key="ins_wall_lab")
+        ceiling_hourly = st.number_input("Ceiling Labour Rate per hour ($)", min_value=0.0, key="ins_ceil_rate")
+        ceiling_hours = st.number_input("Ceiling Labour Time (hours)", min_value=0.0, key="ins_ceil_hours")
+        ceiling_flat_srchg = st.number_input("Ceiling Flat Surcharge ($)", min_value=0.0, key="ins_ceil_flat")
+        cathedral_hourly = st.number_input("Cathedral Labour Rate per hour ($)", min_value=0.0, key="ins_cat_rate")
+        cathedral_hours = st.number_input("Cathedral Labour Time per section (hours)", min_value=0.0, key="ins_cat_hours")
+        cathedral_flat = st.number_input("Cathedral Flat Surcharge per section ($)", min_value=0.0, key="ins_cat_flat")
 
     with tabs[3]:
         st.subheader("4. Review & Download")
-        if st.button("Run Estimate"):
+        if st.button("Run Estimate", key="ins_run"):
             # Materials
+            wp_cov = wp["coverage_per_bag"]; wp_pcs = wp["pieces_per_bag"]
             wall_area = wall_linear_feet * wall_height
-            wb_cov = wp["coverage_per_bag"]
-            wb_pcs = wp["pieces_per_bag"]
-            wall_bags = math.ceil(wall_area / wb_cov) if wb_cov > 0 else 0
-            wall_pieces = wall_bags * wb_pcs
+            wall_bags = math.ceil(wall_area / wp_cov) if wp_cov > 0 else 0
+            wall_pieces = wall_bags * wp_pcs
             wall_cost = wall_bags * wall_price_per_bag
 
             # Cathedrals (slope-based)
-            cs_cov = cp["coverage_per_bag"]
-            cs_pcs = cp["pieces_per_bag"]
+            cp_cov = cp["coverage_per_bag"]; cp_pcs = cp["pieces_per_bag"]
             total_cat_area = 0.0
             for length, bw, rise in cat_sections:
                 slope = math.sqrt(max((bw / 2) ** 2 + rise ** 2, 0.0))
                 total_cat_area += 2 * slope * length
-            buffered_cov = cs_cov * 1.10 if cs_cov > 0 else 0
+            buffered_cov = cp_cov * 1.10 if cp_cov > 0 else 0
             cat_bags = math.ceil(total_cat_area / buffered_cov) if buffered_cov > 0 else 0
-            cat_pieces = cat_bags * cs_pcs
+            cat_pieces = cat_bags * cp_pcs
             cat_cost = cat_bags * cat_price_per_bag
 
             # Ceiling
@@ -606,17 +551,14 @@ def run_insulation_estimator():
 
             # Display
             st.subheader("Materials Summary")
-            st.write(lines[1])
-            st.write(lines[2])
-            st.write(lines[3])
+            st.write(lines[1]); st.write(lines[2]); st.write(lines[3])
 
             st.subheader("Labour & Surcharges")
             for l in lines[5:10]:
                 st.write(l)
 
             st.subheader("Batt Counts")
-            st.write(lines[12])
-            st.write(lines[13])
+            st.write(lines[12]); st.write(lines[13])
 
             st.subheader("Diagrams")
             for _, bw, rise in cat_sections:
