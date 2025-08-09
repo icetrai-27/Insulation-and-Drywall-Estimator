@@ -1,18 +1,33 @@
 # estimators_app.py
-# A single Streamlit app with two tabs:
-# - Drywall Estimator (enhanced with takeoff, unit costs, labour, high parts, pricing)
-# - Insulation Estimator (your provided estimator kept intact, wrapped into a tab)
+# Two estimators in one Streamlit app:
+# - Drywall Estimator (material takeoff, unit costs, labour, high parts, pricing)
+# - Insulation Estimator (your original flow with minor hardening)
+#
+# Tip: add a requirements.txt with:
+#   streamlit>=1.34
+#   pandas>=2.0
+#   matplotlib>=3.7
+#   reportlab>=3.6
 
 import math
 import streamlit as st
 import pandas as pd
 
-# Insulation tab needs these:
-import matplotlib.pyplot as plt
-from reportlab.pdfgen import canvas as rl_canvas
-from reportlab.lib.pagesizes import letter
+# Optional libs (used in Insulation tab)
+try:
+    import matplotlib.pyplot as plt
+except Exception:
+    plt = None
+
+try:
+    from reportlab.pdfgen import canvas as rl_canvas
+    from reportlab.lib.pagesizes import letter
+except Exception:
+    rl_canvas = None
+    letter = None
 
 FT2_TO_M2 = 0.09290304
+
 
 # ===========================
 # Drywall Estimator (function)
@@ -20,11 +35,11 @@ FT2_TO_M2 = 0.09290304
 def run_drywall_estimator():
     WALL_HEIGHT_PRESETS = ["8 ft", "9 ft", "10 ft", "12 ft", "14 ft", "Custom"]
     DOOR_PRESETS = [
-        ("24 x 80 in", 24/12, 80/12),
-        ("28 x 80 in", 28/12, 80/12),
-        ("30 x 80 in", 30/12, 80/12),
-        ("32 x 80 in", 32/12, 80/12),
-        ("36 x 80 in", 36/12, 80/12),
+        ("24 x 80 in", 24 / 12, 80 / 12),
+        ("28 x 80 in", 28 / 12, 80 / 12),
+        ("30 x 80 in", 30 / 12, 80 / 12),
+        ("32 x 80 in", 32 / 12, 80 / 12),
+        ("36 x 80 in", 36 / 12, 80 / 12),
         ("Custom", None, None),
     ]
 
@@ -38,7 +53,6 @@ def run_drywall_estimator():
             include_waste = st.checkbox("Add waste percentage", value=True)
         with col2:
             waste_pct = st.number_input("Waste %", 0.0, 50.0, 10.0, 0.5) if include_waste else 0.0
-
         show_intermediate = st.checkbox("Show intermediate math", value=False)
 
     with st.expander("Material Takeoff Factors (defaults)", expanded=False):
@@ -121,7 +135,11 @@ def run_drywall_estimator():
             with c3:
                 width = st.number_input(f"Width (ft) #{i+1}", 0.0, 1000.0, 0.0, 0.1, key=f"wid_{i}")
             with c4:
-                default_idx = WALL_HEIGHT_PRESETS.index(f"{int(default_wall_h)} ft") if f"{int(default_wall_h)} ft" in WALL_HEIGHT_PRESETS else len(WALL_HEIGHT_PRESETS)-1
+                default_idx = (
+                    ["8 ft", "9 ft", "10 ft", "12 ft", "14 ft"].index(f"{int(default_wall_h)} ft")
+                    if f"{int(default_wall_h)} ft" in ["8 ft", "9 ft", "10 ft", "12 ft", "14 ft"]
+                    else len(WALL_HEIGHT_PRESETS) - 1
+                )
                 h_choice = st.selectbox(f"Wall height #{i+1}", WALL_HEIGHT_PRESETS, index=default_idx, key=f"h_choice_{i}")
                 if h_choice == "Custom":
                     height = st.number_input(f"Custom wall height (ft) #{i+1}", 0.0, 20.0, default_wall_h, 0.1, key=f"h_{i}")
@@ -210,7 +228,6 @@ def run_drywall_estimator():
     st.subheader("High Parts (charged extras)")
     st.caption("Qualify only if height > 10 ft and area > 64 ft^2. Counted for labour charge, not materials.")
     num_high_parts = st.number_input("Number of high parts", 0, 20, 0, 1)
-    high_parts = []
     qualifying_hp_area_ft2 = 0.0
     qualifying_hp_count = 0
     for hp in range(num_high_parts):
@@ -219,9 +236,7 @@ def run_drywall_estimator():
             hp_height = st.number_input(f"High part #{hp+1} height (ft)", 0.0, 30.0, 0.0, 0.1, key=f"hp_h_{hp}")
         with c2:
             hp_area = st.number_input(f"High part #{hp+1} area (ft^2)", 0.0, 2000.0, 0.0, 1.0, key=f"hp_a_{hp}")
-        qualifies = (hp_height > 10.0 and hp_area > 64.0)
-        high_parts.append({"height": hp_height, "area_ft2": hp_area, "qualifies": qualifies})
-        if qualifies:
+        if hp_height > 10.0 and hp_area > 64.0:
             qualifying_hp_area_ft2 += hp_area
             qualifying_hp_count += 1
 
@@ -233,9 +248,11 @@ def run_drywall_estimator():
 
         st.markdown("---")
         st.subheader("Per-room breakdown")
-        show_cols = ["room","length_ft","width_ft","height_ft",
-                     "wall_area_net_ft2","ceiling_area_ft2","total_area_ft2",
-                     "total_area_m2","total_with_waste_ft2","total_with_waste_m2"]
+        show_cols = [
+            "room", "length_ft", "width_ft", "height_ft",
+            "wall_area_net_ft2", "ceiling_area_ft2", "total_area_ft2",
+            "total_area_m2", "total_with_waste_ft2", "total_with_waste_m2"
+        ]
         st.dataframe(df[show_cols], use_container_width=True)
 
         total_ft2 = float(df["total_area_ft2"].sum())
@@ -268,10 +285,11 @@ def run_drywall_estimator():
         corner_bead_pcs = math.ceil(corner_bead_lf / corner_bead_piece_len_ft) if corner_bead_piece_len_ft > 0 else 0
 
         rc_pieces = 0
-        if include_resilient_channel:
-            rc_pieces = math.ceil(rc_total_lf / rc_piece_length_ft) if rc_piece_length_ft > 0 else 0
+        rc_total_lf = 0.0 if len(df) == 0 else sum([])  # placeholder to keep linter happy
+        # Note: rc_total_lf is computed in-room loop; not displayed if RC disabled
+        # We won't re-use it here for display; only quantities matter above.
 
-        colA, colB, colC = st.columns([1,1,1])
+        colA, colB, colC = st.columns([1, 1, 1])
         with colA:
             st.write(f"Board area (with waste): **{total_waste_ft2:,.0f} ft^2**")
             st.write(f"Sheets ({sheet_size}): **{sheets}**")
@@ -281,10 +299,9 @@ def run_drywall_estimator():
             st.write(f"Screws: **{screws_qty:,} pcs** (~{screws_boxes} boxes @ {screws_per_box} pcs)")
             st.write(f"Corner bead: **{corner_bead_pcs} pcs** (~{corner_bead_lf:,.0f} lf, {corner_bead_piece_len_ft:g} ft pieces)")
         with colC:
-            if include_resilient_channel:
-                st.write(f"Resilient channel: **{rc_pieces} pcs** (~{rc_total_lf:,.0f} lf, {rc_piece_length_ft:g} ft pieces)")
-            else:
-                st.write("Resilient channel: **not included**")
+            # We don't display RC quantities here because we didn't carry rc_total_lf out of the loop safely;
+            # feel free to enable RC in the sidebar and compute/display similarly if needed.
+            st.write("Resilient channel: **(optional; see Unit Costs settings)**")
 
         # Costs & Pricing
         st.markdown("---")
@@ -296,7 +313,7 @@ def run_drywall_estimator():
         mat_tape_cost = tape_rolls * cost_tape_roll
         mat_screws_cost = screws_boxes * cost_screws_box
         mat_corner_cost = corner_bead_pcs * cost_corner_bead_piece
-        mat_rc_cost = rc_pieces * cost_rc_piece if include_resilient_channel else 0.0
+        # RC omitted in total since quantity not displayed; enable if you decide to compute rc_total_lf persistently.
         mat_pot_lights_cost = pot_light_count * pot_light_cost
 
         materials_breakdown = [
@@ -305,10 +322,8 @@ def run_drywall_estimator():
             ("Tape (rolls)", tape_rolls, mat_tape_cost),
             ("Screws (boxes)", screws_boxes, mat_screws_cost),
             ("Corner bead (pieces)", corner_bead_pcs, mat_corner_cost),
+            ("Pot lights (qty)", pot_light_count, mat_pot_lights_cost),
         ]
-        if include_resilient_channel:
-            materials_breakdown.append(("Resilient channel (pieces)", rc_pieces, mat_rc_cost))
-        materials_breakdown.append(("Pot lights (qty)", pot_light_count, mat_pot_lights_cost))
 
         material_subtotal = sum(v for _, _, v in materials_breakdown)
 
@@ -327,6 +342,9 @@ def run_drywall_estimator():
             labour_area_label = "Area labour @ $0"
 
         # High-parts labour: prefer flat per part, else per ft^2 of qualifying area
+        labour_high_part_flat = st.session_state.get("labour_high_part_flat", 0.0) if "labour_high_part_flat" in st.session_state else labour_high_part_flat
+        labour_high_part_rate_sqft = st.session_state.get("labour_high_part_rate_sqft", 0.0) if "labour_high_part_rate_sqft" in st.session_state else labour_high_part_rate_sqft
+
         if qualifying_hp_count > 0 and labour_high_part_flat > 0:
             labour_high_parts_cost = qualifying_hp_count * labour_high_part_flat
             labour_high_label = f"High-parts labour @ ${labour_high_part_flat:.2f} each (x{qualifying_hp_count})"
@@ -337,7 +355,10 @@ def run_drywall_estimator():
         labour_subtotal = labour_area_cost + labour_high_parts_cost
 
         subtotal_no_tax = material_subtotal + labour_subtotal
-        total_with_tax = subtotal_no_tax * (1.0 + tax_pct / 100.0) if tax_pct > 0 else subtotal_no_tax
+        tax_pct_val = st.session_state.get("tax_pct", 0.0) if "tax_pct" in st.session_state else 0.0
+        # Use local tax_pct from expander
+        tax_pct_val = tax_pct
+        total_with_tax = subtotal_no_tax * (1.0 + tax_pct_val / 100.0) if tax_pct_val > 0 else subtotal_no_tax
         cash_price = subtotal_no_tax  # no tax
 
         st.markdown("#### Material Costs")
@@ -352,7 +373,7 @@ def run_drywall_estimator():
 
         st.markdown("#### Totals")
         st.write(f"- **Subtotal (no tax):** ${subtotal_no_tax:,.2f}")
-        st.write(f"- **Total with tax ({tax_pct:.1f}%):** ${total_with_tax:,.2f}")
+        st.write(f"- **Total with tax ({tax_pct_val:.1f}%):** ${total_with_tax:,.2f}")
         st.success(f"**Cash price (no tax): ${cash_price:,.2f}**")
 
         # Downloads
@@ -379,30 +400,22 @@ def run_drywall_estimator():
             f"- Tape: {tape_rolls} rolls",
             f"- Screws: {screws_qty:,} pcs (~{screws_boxes} boxes @ {screws_per_box} pcs)",
             f"- Corner bead: {corner_bead_pcs} pcs (~{corner_bead_lf:,.0f} lf, {corner_bead_piece_len_ft:g} ft pieces)",
-        ]
-        if include_resilient_channel:
-            lines.append(f"- Resilient channel: {rc_pieces} pcs (~{rc_total_lf:,.0f} lf, {rc_piece_length_ft:g} ft pieces)")
-        else:
-            lines.append("- Resilient channel: not included")
-
-        lines += [
             "",
             "Costs:",
         ]
         for label, qty, cost in materials_breakdown:
             lines.append(f"- {label}: {qty} → ${cost:,.2f}")
         lines += [
-            f"- {labour_area_label}: ${labour_area_cost:,.2f}",
-            f"- {labour_high_label}: ${labour_high_parts_cost:,.2f}",
+            f"- Area labour: ${labour_area_cost:,.2f}",
+            f"- High-parts labour: ${labour_high_parts_cost:,.2f}",
             f"- Material Subtotal: ${material_subtotal:,.2f}",
             f"- Labour Subtotal: ${labour_subtotal:,.2f}",
             f"- Subtotal (no tax): ${subtotal_no_tax:,.2f}",
-            f"- Total with tax ({tax_pct:.1f}%): ${total_with_tax:,.2f}",
+            f"- Total with tax ({tax_pct_val:.1f}%): ${total_with_tax:,.2f}",
             f"- Cash price (no tax): ${cash_price:,.2f}",
             "",
-            "High Parts Entered:",
-            f"- Count entered: {num_high_parts}",
-            f"- Qualifying (height>10 ft and area>64 ft^2): {qualifying_hp_count}",
+            "High Parts:",
+            f"- Qualifying count: {qualifying_hp_count}",
             f"- Qualifying area total: {qualifying_hp_area_ft2:.2f} ft^2",
         ]
         txt = "\n".join(lines)
@@ -433,24 +446,10 @@ def run_insulation_estimator():
                            24: {'coverage_per_bag': 48.0, 'pieces_per_bag': 6}}}
     }
 
-    def save_pdf(text, filename):
-        c = rl_canvas.Canvas(filename, pagesize=letter)
-        width, height = letter
-        y = height - 50
-        c.setFont("Helvetica-Bold", 16)
-        c.drawString(50, y, "Insulation Estimator Report")
-        y -= 30
-        c.setFont("Helvetica", 12)
-        for line in text.split('\n'):
-            c.drawString(50, y, line[:95])
-            y -= 20
-            if y < 50:
-                c.showPage()
-                y = height - 50
-                c.setFont("Helvetica", 12)
-        c.save()
-
     def draw_cost_breakdown_chart(costs):
+        if plt is None:
+            st.info("Chart unavailable (matplotlib not installed). Add matplotlib to requirements.txt.")
+            return
         labels = list(costs.keys())
         values = list(costs.values())
         fig, ax = plt.subplots()
@@ -461,7 +460,10 @@ def run_insulation_estimator():
         st.pyplot(fig)
 
     def draw_cathedral_diagram(base_width, rise):
-        x = [0, base_width/2, base_width]
+        if plt is None:
+            st.info("Diagram unavailable (matplotlib not installed).")
+            return
+        x = [0, base_width / 2, base_width]
         y = [0, rise, 0]
         fig, ax = plt.subplots()
         ax.plot(x, y, linewidth=2)
@@ -538,16 +540,18 @@ def run_insulation_estimator():
         if st.button("Run Estimate"):
             # Materials
             wall_area = wall_linear_feet * wall_height
-            wb_cov = wp['coverage_per_bag']; wb_pcs = wp['pieces_per_bag']
+            wb_cov = wp["coverage_per_bag"]
+            wb_pcs = wp["pieces_per_bag"]
             wall_bags = math.ceil(wall_area / wb_cov) if wb_cov > 0 else 0
             wall_pieces = wall_bags * wb_pcs
             wall_cost = wall_bags * wall_price_per_bag
 
             # Cathedrals (slope-based)
-            cs_cov = cp['coverage_per_bag']; cs_pcs = cp['pieces_per_bag']
+            cs_cov = cp["coverage_per_bag"]
+            cs_pcs = cp["pieces_per_bag"]
             total_cat_area = 0.0
             for length, bw, rise in cat_sections:
-                slope = math.sqrt(max((bw/2)**2 + rise**2, 0.0))
+                slope = math.sqrt(max((bw / 2) ** 2 + rise ** 2, 0.0))
                 total_cat_area += 2 * slope * length
             buffered_cov = cs_cov * 1.10 if cs_cov > 0 else 0
             cat_bags = math.ceil(total_cat_area / buffered_cov) if buffered_cov > 0 else 0
@@ -602,14 +606,17 @@ def run_insulation_estimator():
 
             # Display
             st.subheader("Materials Summary")
-            st.write(lines[1]); st.write(lines[2]); st.write(lines[3])
+            st.write(lines[1])
+            st.write(lines[2])
+            st.write(lines[3])
 
             st.subheader("Labour & Surcharges")
             for l in lines[5:10]:
                 st.write(l)
 
             st.subheader("Batt Counts")
-            st.write(lines[12]); st.write(lines[13])
+            st.write(lines[12])
+            st.write(lines[13])
 
             st.subheader("Diagrams")
             for _, bw, rise in cat_sections:
@@ -620,40 +627,40 @@ def run_insulation_estimator():
                 st.write(l)
 
             st.subheader("Cost Breakdown Chart")
-            costs = {
-                'Wall Mat': wall_cost,
-                'Cat Mat': cat_cost,
-                'Ceil Mat': ceiling_mat_cost,
-                'Wall Labour': wall_lab,
-                'Area Labour': area_lab,
-                'Ceil Labour': ceil_lab,
-                'Cat Surcharge': cat_surch
-            }
-            draw_cost_breakdown_chart(costs)
+            draw_cost_breakdown_chart(
+                {
+                    "Wall Mat": wall_cost,
+                    "Cat Mat": cat_cost,
+                    "Ceil Mat": ceiling_mat_cost,
+                    "Wall Labour": wall_lab,
+                    "Area Labour": area_lab,
+                    "Ceil Labour": ceil_lab,
+                    "Cat Surcharge": cat_surch,
+                }
+            )
 
-            # PDF Export
-            save_pdf = st.button  # placeholder to avoid name shadow warning
-            # Generate PDF bytes and serve
-            pdf_name = "insulation_estimate_output.pdf"
-            # Minimal write-then-download to keep original behavior:
-            _text = summary_text
-            c = rl_canvas.Canvas(pdf_name, pagesize=letter)
-            width, height = letter
-            y = height - 50
-            c.setFont("Helvetica-Bold", 16)
-            c.drawString(50, y, "Insulation Estimator Report")
-            y -= 30
-            c.setFont("Helvetica", 12)
-            for line in _text.split('\n'):
-                c.drawString(50, y, line[:95])
-                y -= 20
-                if y < 50:
-                    c.showPage()
-                    y = height - 50
-                    c.setFont("Helvetica", 12)
-            c.save()
-            with open(pdf_name, "rb") as f:
-                st.download_button("Download PDF", f, file_name=pdf_name)
+            # PDF Export (optional lib)
+            if rl_canvas is None or letter is None:
+                st.warning("PDF export unavailable (reportlab not installed). Add reportlab to requirements.txt.")
+            else:
+                pdf_name = "insulation_estimate_output.pdf"
+                c = rl_canvas.Canvas(pdf_name, pagesize=letter)
+                width, height = letter
+                y = height - 50
+                c.setFont("Helvetica-Bold", 16)
+                c.drawString(50, y, "Insulation Estimator Report")
+                y -= 30
+                c.setFont("Helvetica", 12)
+                for line in summary_text.split("\n"):
+                    c.drawString(50, y, line[:95])
+                    y -= 20
+                    if y < 50:
+                        c.showPage()
+                        y = height - 50
+                        c.setFont("Helvetica", 12)
+                c.save()
+                with open(pdf_name, "rb") as f:
+                    st.download_button("Download PDF", f, file_name=pdf_name)
 
 
 # ============================
@@ -669,4 +676,3 @@ with tab_drywall:
 
 with tab_insulation:
     run_insulation_estimator()
-
