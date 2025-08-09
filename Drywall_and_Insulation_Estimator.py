@@ -43,6 +43,15 @@ def run_drywall_estimator():
         ("Custom", None, None),
     ]
 
+    # New: all common residential sheet sizes (label -> area in ft²)
+    SHEET_OPTIONS = [
+        ("4x8 (32 ft²)", 32.0),
+        ("4x9 (36 ft²)", 36.0),
+        ("4x10 (40 ft²)", 40.0),
+        ("4x12 (48 ft²)", 48.0),
+        ('54" x 8\' (36 ft²)', 36.0),  # tall board for 9' walls
+    ]
+
     st.header("Drywall Estimator (per room)")
     st.caption("Calculate drywall areas, auto material takeoff, and pricing. Windows/doors deducted, ceilings optional.")
 
@@ -67,7 +76,12 @@ def run_drywall_estimator():
             corner_bead_lf_per_1000 = st.number_input("Corner bead (lf per 1000 ft^2)", 0.0, 200.0, 50.0, 5.0)
         with c3:
             corner_bead_piece_len_ft = st.number_input("Corner bead piece length (ft)", 4.0, 12.0, 8.0, 1.0)
-            sheet_size = st.selectbox("Sheet size", ["4x8 (32 ft^2)", "4x12 (48 ft^2)"], index=0)
+            sheet_label = st.selectbox(
+                "Sheet size",
+                [label for label, _ in SHEET_OPTIONS],
+                index=0
+            )
+            sheet_area = next(area for label, area in SHEET_OPTIONS if label == sheet_label)
 
     with st.expander("Resilient Channel (optional)", expanded=False):
         include_resilient_channel = st.checkbox("Include Resilient Channel", value=False)
@@ -135,7 +149,6 @@ def run_drywall_estimator():
             with c3:
                 width = st.number_input(f"Width (ft) #{i+1}", 0.0, 1000.0, 0.0, 0.1, key=f"wid_{i}")
             with c4:
-                # default wall height picker
                 h_choice = st.selectbox(
                     f"Wall height #{i+1}",
                     WALL_HEIGHT_PRESETS,
@@ -273,7 +286,6 @@ def run_drywall_estimator():
         st.markdown("---")
         st.subheader("Material Takeoff (auto)")
 
-        sheet_area = 32.0 if "4x8" in sheet_size else 48.0
         sheets = math.ceil(total_waste_ft2 / sheet_area) if sheet_area > 0 else 0
 
         mud_gal = (total_waste_ft2 / 1000.0) * mud_gal_per_1000
@@ -290,7 +302,7 @@ def run_drywall_estimator():
         colA, colB, colC = st.columns([1, 1, 1])
         with colA:
             st.write(f"Board area (with waste): **{total_waste_ft2:,.0f} ft^2**")
-            st.write(f"Sheets ({sheet_size}): **{sheets}**")
+            st.write(f"Sheets ({sheet_label}): **{sheets}**")
             st.write(f"Mud: **{mud_gal:,.1f} gal** (~{mud_pails} pails @ {mud_pail_gal:g} gal)")
         with colB:
             st.write(f"Tape: **{tape_rolls} rolls** (approx)")
@@ -323,29 +335,32 @@ def run_drywall_estimator():
         material_subtotal = sum(v for _, _, v in materials_breakdown)
 
         # Labour area: with-waste + qualifying high-part area
-        # (Drywall labour values live in this tab too — kept consistent)
-        charge_area_ft2 = total_waste_ft2  # high-parts concept is drywall-only; insulation tab doesn't add it
+        charge_area_ft2 = total_waste_ft2 + qualifying_hp_area_ft2
         charge_area_m2 = charge_area_ft2 * FT2_TO_M2
 
-        # Read labour rates set earlier (defaults 0)
-        labour_rate_sqft = st.session_state.get("labour_rate_sqft", 0.0)
-        labour_rate_sqm = st.session_state.get("labour_rate_sqm", 0.0)
-        tax_pct_val = st.session_state.get("tax_pct", 0.0)
-
-        if labour_rate_sqft and labour_rate_sqft > 0:
+        if labour_rate_sqft > 0:
             labour_area_cost = charge_area_ft2 * labour_rate_sqft
             labour_area_label = f"Area labour @ ${labour_rate_sqft:.2f}/ft^2"
-        elif labour_rate_sqm and labour_rate_sqm > 0:
+        elif labour_rate_sqm > 0:
             labour_area_cost = charge_area_m2 * labour_rate_sqm
             labour_area_label = f"Area labour @ ${labour_rate_sqm:.2f}/m^2"
         else:
             labour_area_cost = 0.0
             labour_area_label = "Area labour @ $0"
 
-        labour_subtotal = labour_area_cost
+        # High-parts labour
+        if qualifying_hp_count > 0 and labour_high_part_flat > 0:
+            labour_high_parts_cost = qualifying_hp_count * labour_high_part_flat
+            labour_high_label = f"High-parts labour @ ${labour_high_part_flat:.2f} each (x{qualifying_hp_count})"
+        else:
+            labour_high_parts_cost = qualifying_hp_area_ft2 * labour_high_part_rate_sqft
+            labour_high_label = f"High-parts labour @ ${labour_high_part_rate_sqft:.2f}/ft^2 (area {qualifying_hp_area_ft2:.0f} ft^2)"
+
+        labour_subtotal = labour_area_cost + labour_high_parts_cost
+
         subtotal_no_tax = material_subtotal + labour_subtotal
-        total_with_tax = subtotal_no_tax * (1.0 + (tax_pct_val or 0) / 100.0)
-        cash_price = subtotal_no_tax
+        total_with_tax = subtotal_no_tax * (1.0 + tax_pct / 100.0) if tax_pct > 0 else subtotal_no_tax
+        cash_price = subtotal_no_tax  # no tax
 
         st.markdown("#### Material Costs")
         for label, qty, cost in materials_breakdown:
@@ -354,11 +369,12 @@ def run_drywall_estimator():
 
         st.markdown("#### Labour Costs")
         st.write(f"- {labour_area_label}: ${labour_area_cost:,.2f}")
+        st.write(f"- {labour_high_label}: ${labour_high_parts_cost:,.2f}")
         st.write(f"**Labour Subtotal:** ${labour_subtotal:,.2f}")
 
         st.markdown("#### Totals")
         st.write(f"- **Subtotal (no tax):** ${subtotal_no_tax:,.2f}")
-        st.write(f"- **Total with tax ({(tax_pct_val or 0):.1f}%):** ${total_with_tax:,.2f}")
+        st.write(f"- **Total with tax ({tax_pct:.1f}%):** ${total_with_tax:,.2f}")
         st.success(f"**Cash price (no tax): ${cash_price:,.2f}**")
 
         # Downloads
@@ -366,6 +382,27 @@ def run_drywall_estimator():
         df_display = df[show_cols]
         csv = df_display.to_csv(index=False).encode("utf-8")
         st.download_button("Download CSV (per-room)", csv, file_name="drywall_per_room.csv", mime="text/csv")
+
+        # Simple TXT summary (abbrev)
+        lines = [
+            "Drywall Estimator Summary (per room)",
+            f"Sheet size: {sheet_label}",
+            f"Grand Total w/ waste: {total_waste_ft2:.2f} ft^2",
+            f"Sheets: {sheets}",
+            "",
+            "Costs:"
+        ]
+        for label, qty, cost in materials_breakdown:
+            lines.append(f"- {label}: {qty} → ${cost:,.2f}")
+        lines += [
+            f"- Area labour: ${labour_area_cost:,.2f}",
+            f"- High-parts labour: ${labour_high_parts_cost:,.2f}",
+            f"- Subtotal (no tax): ${subtotal_no_tax:,.2f}",
+            f"- Total with tax ({tax_pct:.1f}%): ${total_with_tax:,.2f}",
+            f"- Cash price: ${cash_price:,.2f}",
+        ]
+        txt = "\n".join(lines)
+        st.download_button("Download TXT (summary)", txt, file_name="drywall_summary.txt", mime="text/plain")
 
     else:
         st.info("Add at least one room above to see results.")
